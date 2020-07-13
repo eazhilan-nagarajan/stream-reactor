@@ -17,7 +17,7 @@
 
 package io.lenses.streamreactor.connect.aws.s3.storage
 
-import java.io.ByteArrayInputStream
+import java.io.{ByteArrayInputStream, InputStream}
 import java.util.UUID
 
 import com.typesafe.scalalogging.LazyLogging
@@ -34,6 +34,7 @@ import scala.util.Try
 class MultipartBlobStoreStorageInterface(blobStoreContext: BlobStoreContext) extends StorageInterface with LazyLogging {
 
   private val blobStore = blobStoreContext.getBlobStore
+  private val awsMaxKeys = 1000
 
   override def initUpload(bucketAndPath: BucketAndPath): MultiPartUploadState = {
 
@@ -119,16 +120,34 @@ class MultipartBlobStoreStorageInterface(blobStoreContext: BlobStoreContext) ext
       )(
         ListContainerOptions.Builder.recursive().prefix
       )
+      .maxResults(awsMaxKeys)
 
-    val pageSet = blobStore.list(bucketAndPrefix.bucket, options)
+    var pageSetStrings: List[String] = List()
+    var nextMarker: Option[String] = None
+    do {
+      if (nextMarker.nonEmpty) {
+        options.afterMarker(nextMarker.get)
+      }
+      val pageSet = blobStore.list(bucketAndPrefix.bucket, options)
+      nextMarker = Option(pageSet.getNextMarker)
+      pageSetStrings ++= pageSet
+        .asScala
+        .filter(_.getType == StorageType.BLOB)
+        .map(
+          storageMetadata => storageMetadata.getName
+        )
+        .toList
 
-    pageSet
-      .asScala
-      .filter(_.getType == StorageType.BLOB)
-      .map(
-        storageMetadata => storageMetadata.getName
-      )
-      .toList
+    } while (nextMarker.nonEmpty)
+    pageSetStrings
 
+  }
+
+  override def getBlob(bucketAndPath: BucketAndPath): InputStream = {
+    blobStore.getBlob(bucketAndPath.bucket, bucketAndPath.path).getPayload.openStream()
+  }
+
+  override def getBlobSize(bucketAndPath: BucketAndPath): Long = {
+    blobStore.getBlob(bucketAndPath.bucket, bucketAndPath.path).getMetadata.getSize
   }
 }
